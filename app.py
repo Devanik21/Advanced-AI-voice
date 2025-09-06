@@ -48,6 +48,14 @@ if text.strip():
             
             st.audio(audio_bytes, format='audio/mp3')
             
+            # Download button
+            st.download_button(
+                label="📥 Download as MP3",
+                data=audio_bytes,
+                file_name="speech.mp3",
+                mime="audio/mp3"
+            )
+            
             os.unlink(tmp_file.name)
             
     except Exception as e:
