@@ -426,7 +426,7 @@ if __name__ == "__main__":
             with col:
                 if st.button(sample_key, key=f"sample_{i}", use_container_width=True):
                     st.session_state.current_text = sample_texts[sample_key]
-                    st.experimental_rerun()
+                    st.rerun()()
     
     with col2:
         st.markdown('<div class="emotion-card">', unsafe_allow_html=True)
