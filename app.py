@@ -308,7 +308,7 @@ def main():
     """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
-    main())
+    main()
     
     # Initialize session state for text samples
     if 'current_text' not in st.session_state:
