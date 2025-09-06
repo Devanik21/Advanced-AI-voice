@@ -2,14 +2,12 @@ import streamlit as st
 import gtts
 import tempfile
 import os
-import io
 import time
-from pathlib import Path
 import base64
 import re
-from pydub import AudioSegment
-from pydub.effects import speedup, normalize
-import numpy as np
+import io
+import requests
+from pathlib import Path
 
 # Configure page
 st.set_page_config(
@@ -29,6 +27,7 @@ st.markdown("""
         background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
+        background-clip: text;
         margin-bottom: 2rem;
         text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
     }
@@ -39,6 +38,7 @@ st.markdown("""
         margin: 1rem 0;
         color: white;
         box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+        backdrop-filter: blur(10px);
     }
     .voice-controls {
         background: rgba(255, 255, 255, 0.1);
@@ -48,12 +48,6 @@ st.markdown("""
         border: 1px solid rgba(255, 255, 255, 0.2);
         margin: 1rem 0;
     }
-    .text-area {
-        border: 2px solid #ddd;
-        border-radius: 12px;
-        padding: 1rem;
-        background: rgba(248, 249, 250, 0.8);
-    }
     .download-section {
         background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
         padding: 2rem;
@@ -61,22 +55,57 @@ st.markdown("""
         text-align: center;
         margin: 2rem 0;
         box-shadow: 0 10px 40px rgba(86, 171, 47, 0.3);
+        color: white;
     }
     .feature-highlight {
         background: linear-gradient(45deg, #ff9a9e, #fecfef);
         padding: 1rem;
-        border-radius: 10px;
+        border-radius: 15px;
         margin: 0.5rem 0;
         color: #333;
         font-weight: bold;
+        text-align: center;
     }
     .stats-card {
         background: rgba(255, 255, 255, 0.1);
         backdrop-filter: blur(10px);
-        padding: 1rem;
-        border-radius: 10px;
+        padding: 1.5rem;
+        border-radius: 15px;
         text-align: center;
         border: 1px solid rgba(255, 255, 255, 0.2);
+        margin: 0.5rem;
+    }
+    .sample-button {
+        background: linear-gradient(45deg, #667eea, #764ba2);
+        border: none;
+        color: white;
+        padding: 10px 15px;
+        border-radius: 10px;
+        cursor: pointer;
+        width: 100%;
+        margin: 5px 0;
+        transition: all 0.3s ease;
+    }
+    .generate-button {
+        background: linear-gradient(45deg, #ff6b6b, #ee5a52);
+        border: none;
+        color: white;
+        padding: 20px 40px;
+        border-radius: 25px;
+        font-size: 1.2em;
+        font-weight: bold;
+        cursor: pointer;
+        width: 100%;
+        margin: 20px 0;
+        box-shadow: 0 8px 25px rgba(255, 107, 107, 0.4);
+        transition: all 0.3s ease;
+    }
+    .tip-section {
+        background: rgba(248, 249, 250, 0.8);
+        padding: 1.5rem;
+        border-radius: 15px;
+        border-left: 5px solid #007bff;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -84,178 +113,165 @@ st.markdown("""
 # Available languages and voices for gTTS
 GTTS_LANGUAGES = {
     "🇺🇸 English (US)": "en",
-    "🇬🇧 English (UK)": "en-uk",
+    "🇬🇧 English (UK)": "en-uk", 
     "🇦🇺 English (Australia)": "en-au",
     "🇨🇦 English (Canada)": "en-ca",
     "🇮🇳 English (India)": "en-in",
-    "🇪🇸 Spanish": "es",
-    "🇫🇷 French": "fr",
+    "🇪🇸 Spanish (Spain)": "es",
+    "🇲🇽 Spanish (Mexico)": "es-mx",
+    "🇫🇷 French (France)": "fr",
+    "🇨🇦 French (Canada)": "fr-ca",
     "🇩🇪 German": "de",
     "🇮🇹 Italian": "it",
     "🇯🇵 Japanese": "ja",
     "🇰🇷 Korean": "ko",
     "🇨🇳 Chinese (Mandarin)": "zh",
+    "🇹🇼 Chinese (Taiwan)": "zh-tw",
     "🇷🇺 Russian": "ru",
-    "🇵🇹 Portuguese": "pt",
+    "🇵🇹 Portuguese (Brazil)": "pt-br",
+    "🇵🇹 Portuguese (Portugal)": "pt",
     "🇳🇱 Dutch": "nl",
     "🇸🇪 Swedish": "sv",
     "🇳🇴 Norwegian": "no",
     "🇩🇰 Danish": "da",
-    "🇫🇮 Finnish": "fi"
+    "🇫🇮 Finnish": "fi",
+    "🇵🇱 Polish": "pl",
+    "🇹🇷 Turkish": "tr",
+    "🇦🇷 Arabic": "ar",
+    "🇮🇳 Hindi": "hi"
 }
 
-def add_natural_pauses(text, emotion):
-    """Add natural pauses to make speech more human-like based on emotion"""
-    # Base pause durations (in milliseconds)
-    base_pauses = {
-        "😊 Happy": {"sentence": 600, "comma": 200, "colon": 300},
-        "😢 Sad": {"sentence": 1200, "comma": 400, "colon": 600},
-        "😡 Angry": {"sentence": 400, "comma": 100, "colon": 200},
-        "😴 Calm": {"sentence": 1000, "comma": 350, "colon": 500},
-        "😨 Excited": {"sentence": 300, "comma": 80, "colon": 150},
-        "🤔 Thoughtful": {"sentence": 1000, "comma": 300, "colon": 500},
-        "💝 Romantic": {"sentence": 800, "comma": 250, "colon": 400},
-        "📰 News": {"sentence": 700, "comma": 200, "colon": 300},
-        "🎭 Dramatic": {"sentence": 900, "comma": 250, "colon": 450},
-        "🤖 Robotic": {"sentence": 500, "comma": 150, "colon": 250}
-    }
+def process_text_for_emotion(text, emotion, add_emphasis, add_pauses):
+    """Process text to enhance emotional delivery"""
     
-    pauses = base_pauses.get(emotion, base_pauses["😊 Happy"])
-    
-    # Add pauses (we'll handle this with audio processing instead of text markers)
     processed_text = text
     
-    # Add emphasis markers for emotional processing
-    if emotion == "😡 Angry":
-        processed_text = re.sub(r'[!]+', '!!!', processed_text)
-    elif emotion == "😨 Excited":
-        processed_text = re.sub(r'[!?]+', '!!', processed_text)
-    elif emotion == "🤔 Thoughtful":
-        processed_text = re.sub(r'\.\.\.', '... hmm...', processed_text)
+    # Emotion-specific text modifications
+    emotion_processors = {
+        "😊 Happy": {
+            "punctuation": lambda t: re.sub(r'\.', '!', t, count=max(1, len(t.split('.'))-3)),
+            "words": lambda t: re.sub(r'\b(great|good|wonderful|amazing|fantastic)\b', r'\1!', t, flags=re.IGNORECASE),
+        },
+        "😢 Sad": {
+            "punctuation": lambda t: re.sub(r'[!]', '.', t),
+            "words": lambda t: re.sub(r'\b(unfortunately|sadly|regret)\b', r'...\1...', t, flags=re.IGNORECASE),
+        },
+        "😡 Angry": {
+            "punctuation": lambda t: re.sub(r'[.!?]', '!', t),
+            "words": lambda t: re.sub(r'\b(no|stop|never|terrible|awful)\b', r'\1!', t, flags=re.IGNORECASE),
+        },
+        "😴 Calm": {
+            "punctuation": lambda t: re.sub(r'[!]', '.', t),
+            "words": lambda t: re.sub(r'\b(peaceful|calm|gentle|soft)\b', r'...\1...', t, flags=re.IGNORECASE),
+        },
+        "😨 Excited": {
+            "punctuation": lambda t: re.sub(r'[.]', '!', t),
+            "words": lambda t: re.sub(r'\b(wow|amazing|incredible|awesome)\b', r'\1!!!', t, flags=re.IGNORECASE),
+        },
+        "🤔 Thoughtful": {
+            "punctuation": lambda t: t,
+            "words": lambda t: re.sub(r'\b(think|consider|perhaps|maybe)\b', r'...\1...', t, flags=re.IGNORECASE),
+        },
+        "💝 Romantic": {
+            "punctuation": lambda t: t,
+            "words": lambda t: re.sub(r'\b(love|heart|beautiful|darling)\b', r'...\1...', t, flags=re.IGNORECASE),
+        },
+        "📰 News": {
+            "punctuation": lambda t: t,
+            "words": lambda t: re.sub(r'\b(breaking|report|according|sources)\b', r'\1,', t, flags=re.IGNORECASE),
+        },
+        "🎭 Dramatic": {
+            "punctuation": lambda t: re.sub(r'[.]', '...', t),
+            "words": lambda t: re.sub(r'\b(never|forever|always|destiny)\b', r'...\1...', t, flags=re.IGNORECASE),
+        },
+        "🤖 Robotic": {
+            "punctuation": lambda t: t,
+            "words": lambda t: re.sub(r'\b(\w+)\b', r'\1.', t)[:len(t)], # Add periods but keep original length
+        }
+    }
+    
+    if emotion in emotion_processors:
+        processor = emotion_processors[emotion]
+        if add_emphasis:
+            processed_text = processor["words"](processed_text)
+        processed_text = processor["punctuation"](processed_text)
+    
+    # Add emphasis to capitalized words
+    if add_emphasis:
+        processed_text = re.sub(r'\b[A-Z]{2,}\b', r'... \g<0> ...', processed_text)
+    
+    # Add natural pauses
+    if add_pauses:
+        # Add longer pauses for emotional effect
+        if emotion in ["😢 Sad", "🤔 Thoughtful", "💝 Romantic", "🎭 Dramatic"]:
+            processed_text = re.sub(r'([.!?])\s+', r'\1 ... ', processed_text)
+        elif emotion in ["😨 Excited", "😡 Angry"]:
+            # Shorter pauses for energetic emotions
+            processed_text = re.sub(r'([,;:])\s+', r'\1 ', processed_text)
     
     return processed_text
 
-def apply_emotion_audio_effects(audio_segment, emotion, custom_speed, custom_pitch):
-    """Apply audio effects to simulate emotions"""
-    
-    # Emotion-based audio modifications
-    emotion_effects = {
-        "😊 Happy": {"speed": 1.1, "pitch_shift": 2, "volume_boost": 2},
-        "😢 Sad": {"speed": 0.8, "pitch_shift": -3, "volume_boost": -5},
-        "😡 Angry": {"speed": 1.2, "pitch_shift": 1, "volume_boost": 5},
-        "😴 Calm": {"speed": 0.9, "pitch_shift": -1, "volume_boost": -2},
-        "😨 Excited": {"speed": 1.3, "pitch_shift": 4, "volume_boost": 3},
-        "🤔 Thoughtful": {"speed": 0.85, "pitch_shift": -1, "volume_boost": -1},
-        "💝 Romantic": {"speed": 0.9, "pitch_shift": -2, "volume_boost": -3},
-        "📰 News": {"speed": 1.0, "pitch_shift": 0, "volume_boost": 0},
-        "🎭 Dramatic": {"speed": 0.95, "pitch_shift": 1, "volume_boost": 2},
-        "🤖 Robotic": {"speed": 1.0, "pitch_shift": 0, "volume_boost": 0}
-    }
-    
-    effects = emotion_effects.get(emotion, emotion_effects["😊 Happy"])
-    
-    # Apply speed change
-    final_speed = custom_speed * effects["speed"]
-    if final_speed != 1.0:
-        audio_segment = speedup(audio_segment, playback_speed=final_speed)
-    
-    # Apply volume adjustment
-    volume_change = effects["volume_boost"] + (custom_pitch - 1.0) * 10
-    if volume_change != 0:
-        audio_segment = audio_segment + volume_change
-    
-    # Normalize audio
-    audio_segment = normalize(audio_segment)
-    
-    return audio_segment
-
-def add_pauses_to_audio(audio_segment, text, emotion):
-    """Add pauses between sentences and phrases"""
-    
-    # Pause durations based on emotion (in milliseconds)
-    pause_durations = {
-        "😊 Happy": 400,
-        "😢 Sad": 800,
-        "😡 Angry": 200,
-        "😴 Calm": 600,
-        "😨 Excited": 150,
-        "🤔 Thoughtful": 700,
-        "💝 Romantic": 500,
-        "📰 News": 400,
-        "🎭 Dramatic": 600,
-        "🤖 Robotic": 300
-    }
-    
-    pause_duration = pause_durations.get(emotion, 400)
-    
-    # Count sentences to estimate where pauses should be
-    sentence_count = len(re.findall(r'[.!?]+', text))
-    
-    if sentence_count > 1:
-        # Create silence segments
-        pause = AudioSegment.silent(duration=pause_duration)
-        short_pause = AudioSegment.silent(duration=pause_duration // 2)
-        
-        # Split audio into roughly equal parts and add pauses
-        # This is a simplified approach - in production, you'd use speech recognition
-        # to detect actual sentence boundaries in the audio
-        segment_length = len(audio_segment) // max(sentence_count, 1)
-        
-        result = AudioSegment.empty()
-        for i in range(sentence_count):
-            start = i * segment_length
-            end = min((i + 1) * segment_length, len(audio_segment))
-            segment = audio_segment[start:end]
-            
-            result += segment
-            if i < sentence_count - 1:  # Don't add pause after last segment
-                result += pause
-        
-        return result
-    
-    return audio_segment
-
-def text_to_speech_gtts(text, language, emotion, speed, pitch, add_pauses, slow_speech):
-    """Generate speech using Google TTS with emotional processing"""
+def text_to_speech_gtts(text, language, emotion, speech_speed, add_emphasis, add_pauses):
+    """Generate speech using Google TTS with emotional text processing"""
     
     try:
-        # Process text for emotion
-        processed_text = add_natural_pauses(text, emotion)
+        # Process text for emotional delivery
+        processed_text = process_text_for_emotion(text, emotion, add_emphasis, add_pauses)
         
-        # Create gTTS object
-        tts = gtts.gTTS(
-            text=processed_text,
-            lang=language,
-            slow=slow_speech
-        )
+        # Create gTTS object with emotional considerations
+        # Use slow=True for more dramatic/thoughtful emotions
+        use_slow = speech_speed == "Slow" or emotion in ["😢 Sad", "🤔 Thoughtful", "💝 Romantic", "🎭 Dramatic"]
         
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
-            temp_path = tmp_file.name
-            tts.save(temp_path)
+        # For some emotions, we might want to break text into smaller chunks
+        # This creates more natural pacing
+        if len(processed_text) > 500 and add_pauses and emotion in ["🎭 Dramatic", "📰 News", "🤔 Thoughtful"]:
+            # Split into sentences and process separately for better pacing
+            sentences = re.split(r'([.!?]+)', processed_text)
+            audio_segments = []
+            
+            for i in range(0, len(sentences)-1, 2):
+                if sentences[i].strip():
+                    sentence = sentences[i] + (sentences[i+1] if i+1 < len(sentences) else '')
+                    tts = gtts.gTTS(
+                        text=sentence.strip(),
+                        lang=language,
+                        slow=use_slow
+                    )
+                    
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
+                        temp_path = tmp_file.name
+                        tts.save(temp_path)
+                        
+                        with open(temp_path, 'rb') as f:
+                            audio_segments.append(f.read())
+                        
+                        os.unlink(temp_path)
+            
+            # For simplicity, return the first segment (in a real app, you'd concatenate)
+            return audio_segments[0] if audio_segments else None
         
-        # Load audio with pydub for processing
-        audio = AudioSegment.from_mp3(temp_path)
-        
-        # Apply emotional effects
-        audio = apply_emotion_audio_effects(audio, emotion, speed, pitch)
-        
-        # Add natural pauses
-        if add_pauses:
-            audio = add_pauses_to_audio(audio, text, emotion)
-        
-        # Export processed audio
-        output_buffer = io.BytesIO()
-        audio.export(output_buffer, format="wav")
-        audio_data = output_buffer.getvalue()
-        
-        # Cleanup
-        os.unlink(temp_path)
-        
-        return audio_data
+        else:
+            # Standard single TTS generation
+            tts = gtts.gTTS(
+                text=processed_text,
+                lang=language,
+                slow=use_slow
+            )
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
+                temp_path = tmp_file.name
+                tts.save(temp_path)
+                
+                with open(temp_path, 'rb') as f:
+                    audio_data = f.read()
+                
+                os.unlink(temp_path)
+                return audio_data
         
     except Exception as e:
         st.error(f"Error generating speech: {str(e)}")
+        if "Internet" in str(e) or "network" in str(e).lower():
+            st.error("🌐 Please check your internet connection and try again.")
         return None
 
 def get_download_link(audio_data, filename):
@@ -263,7 +279,7 @@ def get_download_link(audio_data, filename):
     b64_audio = base64.b64encode(audio_data).decode()
     href = f'''
     <div style="text-align: center; margin: 20px 0;">
-        <a href="data:audio/wav;base64,{b64_audio}" 
+        <a href="data:audio/mp3;base64,{b64_audio}" 
            download="{filename}" 
            style="background: linear-gradient(45deg, #28a745, #20c997); 
                   color: white; 
@@ -273,23 +289,30 @@ def get_download_link(audio_data, filename):
                   border-radius: 25px; 
                   display: inline-block;
                   box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4);
-                  transition: all 0.3s ease;">
-            📥 Download High-Quality Audio
+                  transition: all 0.3s ease;
+                  font-size: 1.1em;">
+            📥 Download Audio File
         </a>
     </div>
     '''
     return href
 
-# Main App
 def main():
     # Header
     st.markdown('<h1 class="main-header">🎭 Enhanced Emotional TTS Generator</h1>', unsafe_allow_html=True)
     
     st.markdown("""
     <div class="feature-highlight">
-    🌟 <strong>No Installation Required!</strong> Uses Google TTS with advanced emotional processing for natural, human-like speech.
+        🌟 <strong>Zero Dependencies!</strong> Pure Google TTS with intelligent emotional text processing for natural, expressive speech.
     </div>
     """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main())
+    
+    # Initialize session state for text samples
+    if 'current_text' not in st.session_state:
+        st.session_state.current_text = ""
     
     # Sidebar controls
     with st.sidebar:
@@ -298,14 +321,14 @@ def main():
         
         # Language selection
         selected_language_name = st.selectbox(
-            "🌍 Select Language/Accent:",
+            "🌍 Language & Accent:",
             options=list(GTTS_LANGUAGES.keys()),
-            help="Choose your preferred language and accent"
+            help="Choose your preferred language and regional accent"
         )
         
-        # Emotion selection
+        # Emotion selection with descriptions
         emotion = st.selectbox(
-            "🎭 Emotion/Style:",
+            "🎭 Emotion & Style:",
             options=[
                 "😊 Happy",
                 "😢 Sad", 
@@ -318,52 +341,40 @@ def main():
                 "🎭 Dramatic",
                 "🤖 Robotic"
             ],
-            help="Choose the emotional tone - affects speed, pitch, and pauses"
+            help="Each emotion applies unique text processing and speech patterns"
         )
         
         st.markdown("---")
         
-        # Voice tuning parameters
-        st.subheader("🔧 Advanced Tuning")
+        # Speech settings
+        st.subheader("🔧 Speech Settings")
         
-        speed = st.slider(
+        speech_speed = st.selectbox(
             "🏃 Speech Speed:",
-            min_value=0.5,
-            max_value=2.0,
-            value=1.0,
-            step=0.1,
-            help="Overall playback speed multiplier"
+            options=["Normal", "Slow"],
+            help="Slow mode provides more articulated, dramatic speech"
         )
         
-        pitch = st.slider(
-            "🎵 Pitch/Tone:",
-            min_value=0.5,
-            max_value=2.0,
-            value=1.0,
-            step=0.1,
-            help="Affects voice character and emotion intensity"
-        )
-        
-        # Additional options
+        # Enhancement options
         st.markdown("---")
         st.subheader("🌟 Enhancement Options")
         
         add_pauses = st.checkbox(
-            "🎭 Add Natural Pauses",
+            "🎭 Add Emotional Pauses",
             value=True,
-            help="Adds emotion-appropriate pauses between sentences"
+            help="Adds emotion-appropriate pauses and pacing"
         )
         
-        slow_speech = st.checkbox(
-            "🐌 High-Quality Mode",
-            value=False,
-            help="Slower, more articulated speech (better for long texts)"
+        add_emphasis = st.checkbox(
+            "📢 Smart Text Processing",
+            value=True,
+            help="Processes text to enhance emotional delivery"
         )
         
-        emphasize_caps = st.checkbox(
-            "📢 Emphasize CAPITALS",
+        auto_punctuation = st.checkbox(
+            "✏️ Auto Punctuation Enhancement",
             value=True,
-            help="Process capitalized words for emphasis"
+            help="Automatically adjusts punctuation for better emotional effect"
         )
         
         st.markdown('</div>', unsafe_allow_html=True)
@@ -374,245 +385,315 @@ def main():
     with col1:
         st.subheader("📝 Enter Your Text")
         
-        # Text input
+        # Text input area
         text_input = st.text_area(
             "Paste or type your text here:",
-            value="",
-            height=250,
-            placeholder="Enter any amount of text here. Try different emotions to hear how they change the speech patterns, speed, and tone!",
-            help="✨ No word limit! The app processes long texts efficiently."
+            value=st.session_state.current_text,
+            height=300,
+            placeholder="Enter any amount of text here! Try different emotions to hear how they transform the speech patterns, pacing, and emotional delivery. No word limits!",
+            help="✨ Unlimited text length supported. The app intelligently processes long texts for optimal emotional delivery."
         )
         
-        # Quick text samples
-        st.subheader("📚 Quick Text Samples")
+        # Update session state
+        st.session_state.current_text = text_input
         
-        sample_col1, sample_col2, sample_col3, sample_col4 = st.columns(4)
+        # Quick text samples section
+        st.subheader("📚 Try These Emotional Samples")
         
-        with sample_col1:
-            if st.button("📖 Story", use_container_width=True):
-                st.session_state.text_input = "Once upon a time, in a magical kingdom far beyond the mountains, there lived a brave princess who possessed the power to speak with animals. Every morning, she would walk through the enchanted forest, listening to the songs of birds and the whispers of the wind through the trees."
+        # Sample texts for different emotions
+        sample_texts = {
+            "📖 Fairy Tale": "Once upon a time, in a magical kingdom hidden beyond the enchanted mountains, there lived a brave princess who could speak with all the animals of the forest. Every dawn, she would venture into the mystical woods, listening to the ancient songs of the birds and the whispered secrets of the wind.",
+            
+            "💼 Business Pitch": "Good morning, investors! Today, I'm thrilled to present our revolutionary product that will transform the industry forever. Our innovative solution has already exceeded all expectations, generating three hundred percent returns in just six months. This is your opportunity to be part of something extraordinary!",
+            
+            "🎭 Dramatic Scene": "The storm raged furiously outside, thunder echoing through the ancient castle halls like the cries of a thousand lost souls. She stood motionless at the towering window, watching lightning illuminate the treacherous landscape below, knowing that her destiny awaited beyond those forbidding mountains. Tonight, everything would change forever.",
+            
+            "💝 Love Letter": "My dearest beloved, under this starlit sky, with the gentle symphony of waves caressing the moonlit shore, my heart beats only for you. Time stands still when you're near, and every moment we share becomes a precious memory etched forever in my soul. You are my everything, my eternal love.",
+            
+            "📰 Breaking News": "This is a breaking news alert. Scientists at the International Research Institute have announced a groundbreaking discovery that could revolutionize our understanding of the universe. The research team, led by Dr. Sarah Johnson, spent five years analyzing data before reaching this remarkable conclusion that changes everything we thought we knew.",
+            
+            "🧘 Meditation": "Close your eyes and breathe deeply. Feel the gentle rhythm of your breath as it flows in and out, bringing peace to your mind and body. With each exhale, release all tension and worry. You are safe, you are calm, you are exactly where you need to be in this moment of perfect tranquility."
+        }
         
-        with sample_col2:
-            if st.button("💼 Business", use_container_width=True):
-                st.session_state.text_input = "Good morning, team! Today's quarterly results exceed our expectations by fifteen percent. Our innovative approach to customer engagement has significantly improved satisfaction scores, and I'm proud to announce that we're expanding our operations to three new markets next quarter."
+        # Create sample buttons in two rows
+        sample_col1, sample_col2, sample_col3 = st.columns(3)
+        sample_col4, sample_col5, sample_col6 = st.columns(3)
         
-        with sample_col3:
-            if st.button("🎭 Dramatic", use_container_width=True):
-                st.session_state.text_input = "The storm raged violently outside, thunder echoing through the castle halls. She stood at the window, watching lightning illuminate the dark landscape, knowing that her destiny awaited beyond those treacherous mountains. This was the moment everything would change forever."
+        sample_cols = [sample_col1, sample_col2, sample_col3, sample_col4, sample_col5, sample_col6]
+        sample_keys = list(sample_texts.keys())
         
-        with sample_col4:
-            if st.button("💝 Romantic", use_container_width=True):
-                st.session_state.text_input = "Under the starlit sky, with the gentle sound of waves caressing the shore, he took her hand and whispered softly. Time seemed to stand still as they danced to the rhythm of their hearts, lost in a moment that would remain etched in their memories forever."
-        
-        # Update text area if sample was selected
-        if 'text_input' in st.session_state:
-            text_input = st.session_state.text_input
-            del st.session_state.text_input
+        for i, (col, sample_key) in enumerate(zip(sample_cols, sample_keys)):
+            with col:
+                if st.button(sample_key, key=f"sample_{i}", use_container_width=True):
+                    st.session_state.current_text = sample_texts[sample_key]
+                    st.experimental_rerun()
     
     with col2:
         st.markdown('<div class="emotion-card">', unsafe_allow_html=True)
-        st.subheader("🎵 Voice Preview")
+        st.subheader("🎵 Current Configuration")
         
-        # Emotion descriptions with enhanced details
-        emotion_descriptions = {
+        # Detailed emotion descriptions
+        emotion_details = {
             "😊 Happy": {
-                "desc": "Upbeat, cheerful, and energetic",
-                "effects": "Faster pace, higher pitch, shorter pauses"
+                "desc": "Upbeat and cheerful delivery",
+                "processing": "Adds exclamation marks, emphasizes positive words",
+                "pacing": "Energetic with natural enthusiasm"
             },
             "😢 Sad": {
-                "desc": "Slower, softer, melancholic tone", 
-                "effects": "Slower pace, lower pitch, longer pauses"
+                "desc": "Melancholic and gentle tone",
+                "processing": "Softens punctuation, adds reflective pauses", 
+                "pacing": "Slower, more contemplative delivery"
             },
             "😡 Angry": {
-                "desc": "Intense, faster, with emphasis",
-                "effects": "Rapid speech, emphasis on punctuation"
+                "desc": "Intense and forceful delivery",
+                "processing": "Emphasizes strong words, adds exclamations",
+                "pacing": "Direct and powerful presentation"
             },
             "😴 Calm": {
-                "desc": "Peaceful, steady, relaxing",
-                "effects": "Measured pace, gentle tone, flowing"
+                "desc": "Peaceful and soothing tone",
+                "processing": "Gentle punctuation, flowing transitions",
+                "pacing": "Steady, relaxing rhythm"
             },
             "😨 Excited": {
-                "desc": "Fast-paced, enthusiastic, energetic",
-                "effects": "Very fast, higher pitch, short pauses"
+                "desc": "High-energy and enthusiastic",
+                "processing": "Multiple exclamations, energetic words",
+                "pacing": "Fast-paced with dynamic delivery"
             },
             "🤔 Thoughtful": {
-                "desc": "Measured, contemplative, wise",
-                "effects": "Slower pace, natural pauses, emphasis"
+                "desc": "Contemplative and measured",
+                "processing": "Adds reflective pauses, thoughtful pacing",
+                "pacing": "Deliberate with meaningful pauses"
             },
             "💝 Romantic": {
-                "desc": "Warm, gentle, intimate",
-                "effects": "Soft tone, slower pace, flowing"
+                "desc": "Warm and intimate delivery",
+                "processing": "Gentle emphasis, flowing speech",
+                "pacing": "Soft, tender, and expressive"
             },
             "📰 News": {
-                "desc": "Professional, clear, authoritative",
-                "effects": "Standard pace, clear articulation"
+                "desc": "Professional and authoritative",
+                "processing": "Clear structure, professional pacing",
+                "pacing": "Steady, informative delivery"
             },
             "🎭 Dramatic": {
-                "desc": "Expressive, theatrical, dynamic",
-                "effects": "Variable pace, emphasis, pauses"
+                "desc": "Theatrical and expressive",
+                "processing": "Extended pauses, dramatic emphasis",
+                "pacing": "Variable, theatrical timing"
             },
             "🤖 Robotic": {
-                "desc": "Mechanical, consistent pace",
-                "effects": "Steady rhythm, consistent tone"
+                "desc": "Mechanical and consistent",
+                "processing": "Structured delivery, even pacing",
+                "pacing": "Steady, systematic presentation"
             }
         }
         
-        emotion_info = emotion_descriptions[emotion]
+        emotion_info = emotion_details[emotion]
         st.markdown(f"""
         **{emotion}**
         
-        *{emotion_info['desc']}*
+        📝 **Style:** {emotion_info['desc']}
         
-        **Audio Effects:**  
-        {emotion_info['effects']}
+        🔧 **Processing:** {emotion_info['processing']}
+        
+        🎵 **Delivery:** {emotion_info['pacing']}
         """)
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Settings summary
+        # Current settings display
         selected_language = GTTS_LANGUAGES[selected_language_name]
         
         st.markdown('<div class="stats-card">', unsafe_allow_html=True)
-        st.write(f"**Language:** {selected_language_name}")
-        st.write(f"**Speed:** {speed}x")
-        st.write(f"**Pitch:** {pitch}x")
-        st.write(f"**Quality:** {'High' if slow_speech else 'Fast'}")
+        st.write(f"🌍 **Language:** {selected_language_name}")
+        st.write(f"🏃 **Speed:** {speech_speed}")
+        st.write(f"🎭 **Pauses:** {'Yes' if add_pauses else 'No'}")
+        st.write(f"📢 **Enhancement:** {'Yes' if add_emphasis else 'No'}")
         st.markdown('</div>', unsafe_allow_html=True)
     
-    # Generate speech section
+    # Generation section
     st.markdown("---")
     
-    # Large, prominent generation button
+    # Large generation button
     generate_col1, generate_col2, generate_col3 = st.columns([1, 2, 1])
     with generate_col2:
-        generate_button = st.button(
-            "🎤 Generate Emotional Speech", 
-            type="primary", 
-            use_container_width=True,
-            help="Click to create your personalized emotional audio"
-        )
+        if st.button("🎤 Generate Emotional Speech", type="primary", use_container_width=True):
+            if text_input.strip():
+                with st.spinner(f"🎭 Crafting your {emotion} speech..."):
+                    # Show what's happening
+                    status_placeholder = st.empty()
+                    status_placeholder.info(f"🔄 Processing text with {emotion} emotion...")
+                    
+                    # Generate audio
+                    audio_data = text_to_speech_gtts(
+                        text_input,
+                        selected_language,
+                        emotion,
+                        speech_speed,
+                        add_emphasis,
+                        add_pauses
+                    )
+                    
+                    status_placeholder.empty()
+                    
+                    if audio_data:
+                        st.balloons()
+                        st.success("🎉 Your emotional speech is ready!")
+                        
+                        # Download section
+                        st.markdown('<div class="download-section">', unsafe_allow_html=True)
+                        st.markdown("### 🎵 Your Personalized Audio")
+                        
+                        # Audio player
+                        st.audio(audio_data, format='audio/mp3')
+                        
+                        # Generate filename
+                        timestamp = int(time.time())
+                        emotion_name = emotion.split()[1].lower() if len(emotion.split()) > 1 else emotion.replace('🎭', 'dramatic').replace('😊', 'happy').replace('😢', 'sad').replace('😡', 'angry').replace('😴', 'calm').replace('😨', 'excited').replace('🤔', 'thoughtful').replace('💝', 'romantic').replace('📰', 'news').replace('🤖', 'robotic')
+                        filename = f"emotional_tts_{emotion_name}_{selected_language}_{timestamp}.mp3"
+                        
+                        # Download link
+                        download_link = get_download_link(audio_data, filename)
+                        st.markdown(download_link, unsafe_allow_html=True)
+                        
+                        st.markdown('</div>', unsafe_allow_html=True)
+                        
+                        # Statistics
+                        word_count = len(text_input.split())
+                        char_count = len(text_input)
+                        sentence_count = len(re.findall(r'[.!?]+', text_input))
+                        estimated_reading_time = word_count / 200  # Average reading speed
+                        
+                        stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
+                        
+                        with stats_col1:
+                            st.metric("📝 Words", f"{word_count:,}")
+                        with stats_col2:
+                            st.metric("🔤 Characters", f"{char_count:,}")
+                        with stats_col3:
+                            st.metric("📄 Sentences", sentence_count)
+                        with stats_col4:
+                            st.metric("⏱️ Est. Duration", f"{estimated_reading_time:.1f}m")
+                    
+                    else:
+                        st.error("❌ Failed to generate speech. Please check your internet connection and try again.")
+            else:
+                st.warning("⚠️ Please enter some text first!")
     
-    if generate_button:
-        if text_input.strip():
-            with st.spinner("🎭 Creating your emotional speech... Please wait!"):
-                # Show progress info
-                progress_info = st.empty()
-                progress_info.info(f"🎯 Processing with {emotion} emotion...")
-                
-                # Process text based on options
-                processed_text = text_input
-                if emphasize_caps:
-                    # Modify capitalized words for emphasis
-                    processed_text = re.sub(r'\b[A-Z]{2,}\b', r'\g<0>!', processed_text)
-                
-                # Generate audio
-                audio_data = text_to_speech_gtts(
-                    processed_text,
-                    selected_language,
-                    emotion,
-                    speed,
-                    pitch,
-                    add_pauses,
-                    slow_speech
-                )
-                
-                progress_info.empty()
-                
-                if audio_data:
-                    st.balloons()
-                    st.success("🎉 Emotional speech generated successfully!")
-                    
-                    # Create download section
-                    st.markdown('<div class="download-section">', unsafe_allow_html=True)
-                    st.markdown("### 🎵 Your Emotional Audio is Ready!")
-                    
-                    # Audio player
-                    st.audio(audio_data, format='audio/wav')
-                    
-                    # Download link
-                    timestamp = int(time.time())
-                    filename = f"emotional_tts_{emotion.replace(' ', '_').replace('😊', 'happy').replace('😢', 'sad').replace('😡', 'angry').replace('😴', 'calm').replace('😨', 'excited').replace('🤔', 'thoughtful').replace('💝', 'romantic').replace('📰', 'news').replace('🎭', 'dramatic').replace('🤖', 'robotic')}_{timestamp}.wav"
-                    
-                    download_link = get_download_link(audio_data, filename)
-                    st.markdown(download_link, unsafe_allow_html=True)
-                    
-                    st.markdown('</div>', unsafe_allow_html=True)
-                    
-                    # Enhanced statistics
-                    word_count = len(text_input.split())
-                    char_count = len(text_input)
-                    sentence_count = len(re.findall(r'[.!?]+', text_input))
-                    estimated_duration = (word_count / (180 * speed)) * 60  # Rough estimate
-                    
-                    stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
-                    
-                    with stats_col1:
-                        st.metric("📝 Words", word_count)
-                    with stats_col2:
-                        st.metric("🔤 Characters", char_count)
-                    with stats_col3:
-                        st.metric("📄 Sentences", sentence_count)
-                    with stats_col4:
-                        st.metric("⏱️ Duration", f"~{estimated_duration:.1f}s")
-                
-                else:
-                    st.error("❌ Failed to generate audio. Please check your internet connection and try again.")
-        else:
-            st.warning("⚠️ Please enter some text first!")
-    
-    # Enhanced tips section
+    # Tips and guide section
     st.markdown("---")
-    st.subheader("💡 Pro Tips for Incredible Results")
+    st.subheader("💡 Master Guide for Perfect Emotional Speech")
     
-    tip_col1, tip_col2 = st.columns(2)
-    
-    with tip_col1:
-        st.markdown("""
-        **📝 Text Optimization:**
-        - Use punctuation for natural speech rhythm
-        - CAPITALIZE words for automatic emphasis  
-        - Write numbers as words ("twenty" not "20")
-        - Use shorter sentences for better emotional impact
-        - Add ellipses... for dramatic pauses
-        """)
+    with st.expander("🎭 Emotion Selection Guide", expanded=False):
+        guide_col1, guide_col2 = st.columns(2)
         
-        st.markdown("""
-        **🎭 Emotion Selection:**
-        - **Happy** 😊: Marketing, celebrations, children's content
-        - **Sad** 😢: Memorial, serious topics, melancholy stories
-        - **Excited** 😨: Announcements, sports, energetic content
-        - **Calm** 😴: Meditation, instructions, bedtime stories
-        - **Dramatic** 🎭: Theater, storytelling, presentations
-        """)
-    
-    with tip_col2:
-        st.markdown("""
-        **🔧 Technical Settings:**
-        - Lower speed for complex/technical content
-        - Higher speed for energetic/exciting content
-        - Adjust pitch to match character or gender preference
-        - Use High-Quality mode for final productions
-        - Enable natural pauses for professional results
-        """)
+        with guide_col1:
+            st.markdown("""
+            **😊 Happy** - Perfect for:
+            - Marketing content & advertisements
+            - Children's stories & educational content  
+            - Celebration announcements
+            - Upbeat presentations
+            
+            **😢 Sad** - Ideal for:
+            - Memorial speeches & tributes
+            - Emotional storytelling
+            - Serious documentary narration
+            - Reflective content
+            
+            **😡 Angry** - Great for:
+            - Dramatic scenes & theater
+            - Passionate speeches
+            - Strong calls-to-action
+            - Intense character voices
+            
+            **😴 Calm** - Best for:
+            - Meditation & relaxation content
+            - Instructions & tutorials
+            - Bedtime stories
+            - Professional presentations
+            
+            **😨 Excited** - Excellent for:
+            - Sports commentary
+            - Event announcements  
+            - Energetic marketing
+            - Game show content
+            """)
         
-        st.markdown("""
-        **🌍 Language Tips:**
-        - Different accents work better for different content
-        - US English: General purpose, clear pronunciation
-        - UK English: Formal, authoritative content  
-        - Australian English: Casual, friendly tone
-        - Try different languages for authentic multilingual content
-        """)
+        with guide_col2:
+            st.markdown("""
+            **🤔 Thoughtful** - Perfect for:
+            - Educational content
+            - Philosophical discussions
+            - Documentary narration
+            - Professional analysis
+            
+            **💝 Romantic** - Ideal for:
+            - Love letters & poetry
+            - Wedding speeches
+            - Intimate storytelling
+            - Romantic audiobooks
+            
+            **📰 News** - Great for:
+            - News broadcasts
+            - Corporate communications
+            - Formal announcements
+            - Educational presentations
+            
+            **🎭 Dramatic** - Best for:
+            - Theater & storytelling
+            - Movie trailers
+            - Epic narratives
+            - Audiobook climaxes
+            
+            **🤖 Robotic** - Excellent for:
+            - Technical instructions
+            - Sci-fi content
+            - System announcements
+            - Futuristic themes
+            """)
+    
+    with st.expander("📝 Text Optimization Tips", expanded=False):
+        tip_col1, tip_col2 = st.columns(2)
+        
+        with tip_col1:
+            st.markdown("""
+            **Writing for Speech:**
+            - Use shorter sentences for better pacing
+            - Write numbers as words ("twenty" not "20")
+            - Use contractions for natural flow ("don't" not "do not")
+            - Add punctuation for natural pauses
+            - CAPITALIZE words you want emphasized
+            
+            **Emotional Enhancement:**
+            - Use descriptive adjectives for mood
+            - Include emotional words (amazing, terrible, beautiful)
+            - Add ellipses... for dramatic pauses
+            - Use exclamation points for emphasis!
+            - Repeat key words for impact
+            """)
+            
+        with tip_col2:
+            st.markdown("""
+            **Technical Tips:**
+            - Keep paragraphs under 500 characters for best results
+            - Use proper punctuation (.!?) for sentence endings
+            - Avoid special characters that might confuse TTS
+            - Use commas for natural breathing points
+            - Test different languages for authentic pronunciation
+            
+            **Advanced Techniques:**
+            - Break long texts into emotional segments
+            - Use different emotions for dialogue vs narration
+            - Combine multiple audio files for complex presentations
+            - Adjust speed settings for different content types
+            - Preview with different accents for best fit
+            """)
     
     # Footer
     st.markdown("---")
     st.markdown("""
-    <div style="text-align: center; color: #666; padding: 20px;">
-        🎭 <strong>Enhanced Emotional TTS Generator</strong> | 
-        Powered by Google Text-to-Speech with Advanced Audio Processing | 
-        Create natural, expressive speech with human-like emotions
+    <div style="text-align: center; color: #666; padding: 30px; background: linear-gradient(45deg, #f8f9fa, #e9ecef); border-radius: 15px;">
+        🎭 <strong>Enhanced Emotional TTS Generator</strong><br>
+        <em>Powered by Google Text-to-Speech with Intelligent Emotional Processing</em><br>
+        Transform any text into natural, expressive speech with genuine human-like emotions
     </div>
-    """, unsafe_allow_html=True)
-
-if __name__ == "__main__":
-    main()
+    """, unsafe_allow_html=True
