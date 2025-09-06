@@ -7,7 +7,7 @@ import base64
 import re
 import io
 import requests
-from pathlib import Path
+#from pathlib import Path
 
 # Configure page
 st.set_page_config(
